@@ -21,7 +21,6 @@ def configure_logging(level: str | None = None) -> None:
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
-            structlog.stdlib.add_logger_name,
             structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
