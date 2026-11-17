@@ -66,6 +66,12 @@ files = ["coderl"]
 module = "coderl.*"
 disallow_untyped_defs = true
 
+# The in-sandbox harness narrows types via identity checks on snapshotted locals
+# (`_type(x) is _str`), which mypy cannot follow. It is covered by the security test-suite.
+[[tool.mypy.overrides]]
+module = "coderl.sandbox.harness"
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
