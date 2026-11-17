@@ -1,0 +1,35 @@
+# CodeRL services. Only the sandbox for now; the full stack (API, UI, ...) comes later.
+#
+#   docker compose build sandbox
+#
+# The Docker backend starts its own warm pool from this image (it tags it by content hash and
+# runs `docker run` with the same restrictions as below); this service definition documents
+# those restrictions and allows a manual smoke test:
+#
+#   echo '{"op": "exit"}' | docker compose run --rm -T sandbox
+services:
+  sandbox:
+    image: coderl-sandbox:latest
+    build:
+      context: ./coderl/sandbox
+      dockerfile: ../../docker/sandbox.Dockerfile
+    labels:
+      coderl.sandbox: "1"
+    stdin_open: true
+    init: true
+    user: "10001:10001"
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777
+    ipc: none
+    mem_limit: 320m
+    memswap_limit: 320m
+    cpus: 1
+    pids_limit: 64
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: none

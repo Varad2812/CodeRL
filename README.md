@@ -4,7 +4,7 @@
 (Qwen2.5-Coder 0.5B/1.5B) is trained with GRPO (TRL + PEFT LoRA) on pass/fail signals from
 running its own generated code in a secure sandbox against unit tests.
 
-> 🚧 **Phase 1 — data pipeline**
+> 🚧 **Phase 1b — secure sandbox executor** (Phase 1a data pipeline done)
 
 [![CI](https://github.com/Varad2812/CodeRL/actions/workflows/ci.yml/badge.svg)](https://github.com/Varad2812/CodeRL/actions/workflows/ci.yml)
 
@@ -44,6 +44,52 @@ flowchart LR
 
 No numbers yet — to be filled in after training and evaluation.
 
+## Sandbox
+
+Model-generated code is untrusted, and under RL the policy is *actively searching* for ways to
+get reward without passing tests. The executor runs each solution in a fresh, resource-limited
+interpreter behind three independent layers and fails closed: every test counts as failed
+unless an authenticated per-test record says otherwise. Threat model, guarantees per backend
+and known limitations: **[SECURITY.md](SECURITY.md)**.
+
+```mermaid
+flowchart TB
+    T["Trainer / evaluator<br/>run_batch: bounded concurrency, order kept, per-item isolation"] --> B{backend}
+    B -->|Linux| S["subprocess backend<br/>bubblewrap: user/pid/net namespaces,<br/>read-only root, hidden home/repo"]
+    B -->|macOS default, eval, demo| D["docker backend: warm container pool<br/>--network none, --read-only, cap-drop ALL,<br/>memory/cpu/pids cgroups, non-root"]
+    D --> SV["in-container supervisor<br/>fresh child per job, wipe between jobs"]
+    S --> R
+    SV --> R["trusted runner<br/>nonce-tagged result pipe, wall-clock kill"]
+    R --> H["harness (model code runs here)<br/>rlimits, audit hook, pristine builtins,<br/>tests sent only after the solution loaded"]
+```
+
+```python
+from coderl.sandbox import get_executor   # CODERL_SANDBOX_BACKEND=subprocess|docker
+
+with get_executor() as ex:                # docker on macOS/Windows, subprocess on Linux
+    res = ex.run(solution_code, problem)  # status, per-test results, num_passed, traceback
+    batch = ex.run_batch([(code, problem), ...])
+```
+
+`tests/sandbox/test_security.py` attacks every backend (network, filesystem, secrets, fork and
+memory bombs, infinite loops, `sys.exit`/`os._exit`, fake stdout JSON, forged result records,
+redefined `AssertionError`/builtins/`math.isclose`, `atexit`, reading tests via `gc`, frames,
+signal handlers and file descriptors) and runs the OS-level attacks a second time with the
+in-process hardening disabled. All 1,119 canonical solutions run through both backends in CI
+(99.9% pass; the one failure is a reference solution slower than the 2s CPU limit).
+
+**Throughput** — all 500 MBPP-test canonical solutions (1,516 test cases), `make bench-sandbox`.
+Measured on an **Apple M2 MacBook (8 cores) via Docker Desktop** (Linux VM, 8 vCPUs), so the
+Docker numbers include the VM; the subprocess backend is Linux-only and not shown.
+
+| Backend | Workers | Problems/s | Test cases/s | p50 latency | p95 latency |
+|---------|--------:|-----------:|-------------:|------------:|------------:|
+| docker  | 1 | 66.8 | 202.5 | 10.7 ms | 34.4 ms |
+| docker  | 4 | 207.2 | 628.2 | 12.5 ms | 39.9 ms |
+| docker  | 8 | 309.6 | 938.8 | 19.3 ms | 56.9 ms |
+
+Raw results: [`results/sandbox_bench.json`](results/sandbox_bench.json).
+
 ## Data & contamination policy
 
 - **Train** = MBPP `train` + `validation`. **Eval** = MBPP `test` + HumanEval (never trained on).
@@ -61,7 +107,13 @@ uv venv --python 3.11
 make install      # core + dev deps
 make all          # lint + typecheck + tests
 make data         # downloads MBPP/HumanEval, writes data/processed/*
+make sandbox-image   # build the Docker sandbox image (also built on demand)
+make test-fast       # everything except Docker tests;  make test-docker for those
+make bench-sandbox   # throughput of each available backend -> results/sandbox_bench.json
 ```
+
+On Linux, install `bubblewrap` (`apt install bubblewrap`) for full subprocess-backend isolation;
+`uv run python -m coderl.sandbox info` shows what is available.
 
 Optional extras: `uv sync --extra train`, `--extra gen` (Linux/CUDA only), `--extra app`.
 
@@ -70,13 +122,15 @@ Optional extras: `uv sync --extra train`, `--extra gen` (Linux/CUDA only), `--ex
 ```
 coderl/
   data/       schema, loaders (mbpp, humaneval, apps stub), dedup, build CLI
-  sandbox/    (Phase 2) isolated code execution
+  sandbox/    harness, runner, subprocess + docker backends, worker pool, metrics
   rewards/    (Phase 2) test-based rewards
   train/      (Phase 3) GRPO + LoRA
   eval/       (Phase 4) pass@k evaluation
   app/        (Phase 5) FastAPI backend
   utils/      structured logging, settings
-tests/        offline unit tests (no network)
+docker/       sandbox image (sandbox.Dockerfile)
+scripts/      benchmarks
+tests/        offline unit tests (no network); tests/sandbox = security suite
 ```
 
 ## Design decisions
