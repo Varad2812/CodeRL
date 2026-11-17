@@ -65,6 +65,7 @@ def main() -> None:  # noqa: C901 - intentionally one closure; see module docstr
     _FunctionType = _type(main)
     _ModuleType = _type(sys)
     _type_name = _type.__dict__["__name__"].__get__  # ignores metaclass tricks
+    _type_module = _type.__dict__["__module__"].__get__
     _type_mro = _type.__dict__["__mro__"].__get__
     _type_dict = _type.__dict__["__dict__"].__get__
     _module_dict = _ModuleType.__dict__["__dict__"].__get__
@@ -80,6 +81,8 @@ def main() -> None:  # noqa: C901 - intentionally one closure; see module docstr
     _os_read = os.read
     _os_write = os.write
     _os_exit = os._exit
+    _os_getpid = os.getpid
+    _os_set_blocking = os.set_blocking
     _os_fstat = os.fstat
     _os_dup = os.dup
     _os_dup2 = os.dup2
@@ -145,6 +148,10 @@ def main() -> None:  # noqa: C901 - intentionally one closure; see module docstr
     except _BaseException:
         die(71)
 
+    # Only this process may report: a fork()ed clone of the harness knows the nonce too and
+    # could otherwise race a lucky guess onto the result pipe.
+    harness_pid = _os_getpid()
+
     # Identity of the result pipe: if the solution swaps another pipe onto this fd number to
     # read our (nonce-tagged) records, the inode changes and we refuse to write.
     _st = _os_fstat(result_fd)
@@ -206,6 +213,8 @@ def main() -> None:  # noqa: C901 - intentionally one closure; see module docstr
         try:
             if _thread_count() != 0:  # a solution thread could race the fd check below
                 die(74)
+            if _os_getpid() != harness_pid:
+                die(78)
             st = _os_fstat(result_fd)
             if (st.st_dev, st.st_ino) != result_id:
                 die(75)
@@ -383,10 +392,24 @@ def main() -> None:  # noqa: C901 - intentionally one closure; see module docstr
     def num(n: object) -> str:
         return _int.__repr__(n) if _type(n) is _int else "?"
 
+    def exc_name(t: type) -> str:
+        """Like Python's traceback: `ValueError`, `re.error`, `MyError` (solution-defined)."""
+        name = _type_name(t)
+        if _type(name) is not _str:
+            return "<exception>"
+        if t is TestTimeout:
+            return name
+        try:
+            mod = _type_module(t)
+        except _BaseException:
+            return name
+        if _type(mod) is not _str or mod in ("builtins", "__solution__", "__main__"):
+            return name
+        return mod + "." + name
+
     def describe(ev: object) -> tuple:
         """(type name, message) of an exception. str(ev) is untrusted code -> time-boxed."""
-        tname = _type_name(_type(ev))
-        tname = tname if _type(tname) is _str else "<exception>"
+        tname = exc_name(_type(ev))
         msg = ""
         armed[0] = True
         _setitimer(_ITIMER_REAL, 0.5)
@@ -516,6 +539,10 @@ def main() -> None:  # noqa: C901 - intentionally one closure; see module docstr
     emit("L")
 
     # ------------------------------------------------------------------ receive the tests
+    try:
+        _os_set_blocking(control_fd, True)  # the solution may have flipped it
+    except _BaseException:
+        die(76)
     m2 = read_message(control_fd)
     if _type(m2) is not _tuple or _len(m2) != 3 or _type(m2[0]) is not _str or m2[0] != nonce:
         die(76)  # not from our parent
@@ -535,7 +562,9 @@ def main() -> None:  # noqa: C901 - intentionally one closure; see module docstr
     except _BaseException:
         die(77)
     for mod_name, mod, _snap in protected:
-        base[mod_name] = mod
+        current = _dict_get(base, mod_name)
+        if current is None or _type(current) is _ModuleType:
+            base[mod_name] = mod
     target = _dict_get(sol_ns, entry_point)
     if _type(target) is _FunctionType:
         base[entry_point] = probe(target, test_flags)

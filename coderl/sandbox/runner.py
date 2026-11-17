@@ -278,7 +278,13 @@ def execute(hp: HarnessProcess, job: dict[str, Any], limits: dict[str, Any]) -> 
                 idx = int(fields[0])
             except ValueError:
                 return
-            if 0 <= idx < len(tests) and idx not in test_records:
+            if idx in test_records:
+                # the harness reports each test exactly once; duplicates mean tampering
+                test_records[idx]["passed"] = False
+                test_records[idx]["error_type"] = "DuplicateResult"
+                test_records[idx]["flags"] = [*test_records[idx]["flags"], "duplicate_records"]
+                return
+            if 0 <= idx < len(tests):
                 test_records[idx] = {
                     "index": idx,
                     "passed": fields[1] == "1",
