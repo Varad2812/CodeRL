@@ -67,6 +67,16 @@ def executor(request: pytest.FixtureRequest) -> Iterator[Executor]:
 
 
 @pytest.fixture(scope="session", params=BACKEND_PARAMS)
+def eval_executor(request: pytest.FixtureRequest) -> Iterator[Executor]:
+    """The ``eval`` limit profile, as used by benchmark evaluation."""
+    from coderl.sandbox.types import load_limits
+
+    ex = _make(request.param, load_limits("eval"))
+    yield ex
+    ex.close()
+
+
+@pytest.fixture(scope="session", params=BACKEND_PARAMS)
 def os_only_executor(request: pytest.FixtureRequest) -> Iterator[Executor]:
     """Audit hook disabled: only rlimits / namespaces / container flags protect the host."""
     ex = _make(request.param, SandboxLimits(audit_hook=False))

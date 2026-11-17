@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from pydantic import BaseModel, Field
 
 Status = Literal[
@@ -38,6 +41,37 @@ class SandboxLimits(BaseModel):
     def wire(self) -> dict[str, Any]:
         """Plain-dict form understood by the stdlib-only runner (inside Docker too)."""
         return self.model_dump()
+
+
+PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
+    # RL rollouts: tight limits keep reward computation fast
+    "train": {},
+    # benchmark evaluation: generous enough for slow-but-correct reference solutions
+    "eval": {"cpu_seconds": 6, "wall_seconds": 12.0, "per_test_seconds": 4.0},
+}
+PROFILE_CONFIG_ENV = "CODERL_SANDBOX_CONFIG"
+
+
+def load_limits(profile: str = "train", yaml_path: str | Path | None = None) -> SandboxLimits:
+    """Named limit profile: defaults < YAML ``profiles.<name>`` < ``CODERL_SANDBOX_<NAME>_<FIELD>``.
+
+    The YAML file is ``yaml_path``, else ``$CODERL_SANDBOX_CONFIG``, else none.
+    """
+    if profile not in PROFILE_DEFAULTS:
+        raise ValueError(f"unknown limit profile {profile!r}; expected {sorted(PROFILE_DEFAULTS)}")
+    values: dict[str, Any] = dict(PROFILE_DEFAULTS[profile])
+    path = yaml_path or os.environ.get(PROFILE_CONFIG_ENV)
+    if path and Path(path).exists():
+        loaded = yaml.safe_load(Path(path).read_text()) or {}
+        section = (loaded.get("profiles") or {}).get(profile) or {}
+        if not isinstance(section, dict):
+            raise ValueError(f"{path}: profiles.{profile} must be a mapping")
+        values.update(section)
+    for field in SandboxLimits.model_fields:
+        env = os.environ.get(f"CODERL_SANDBOX_{profile.upper()}_{field.upper()}")
+        if env:
+            values[field] = env
+    return SandboxLimits(**values)
 
 
 class TestResult(BaseModel):

@@ -17,7 +17,7 @@ from .conftest import REPO_ROOT
 
 DATA = REPO_ROOT / "data" / "processed"
 FILES = ("train.jsonl", "eval_mbpp_test.jsonl", "eval_humaneval.jsonl")
-MIN_PASS_RATE = 0.99
+MIN_PASS_RATE = 1.0  # with the eval limit profile every reference solution must pass
 
 
 def _problems() -> list[Problem]:
@@ -30,7 +30,8 @@ def _problems() -> list[Problem]:
     return probs
 
 
-def test_canonical_solutions_pass(executor: Executor) -> None:
+def test_canonical_solutions_pass(eval_executor: Executor) -> None:
+    executor = eval_executor
     probs = [p for p in _problems() if p.canonical_solution]
     results = executor.run_batch([(p.canonical_solution or "", p) for p in probs])
     failures = [(p, r) for p, r in zip(probs, results, strict=True) if r.status != "passed"]

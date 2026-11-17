@@ -6,7 +6,7 @@ import os
 import sys
 
 from coderl.sandbox.backends.base import Executor, SandboxUnavailableError
-from coderl.sandbox.types import SandboxLimits
+from coderl.sandbox.types import SandboxLimits, load_limits
 from coderl.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -21,9 +21,17 @@ def default_backend_name() -> str:
 
 
 def get_executor(
-    backend: str | None = None, limits: SandboxLimits | None = None, **kwargs: object
+    backend: str | None = None,
+    limits: SandboxLimits | None = None,
+    profile: str = "train",
+    **kwargs: object,
 ) -> Executor:
-    """Create the executor named by ``backend``, ``$CODERL_SANDBOX_BACKEND`` or the default."""
+    """Create the executor named by ``backend``, ``$CODERL_SANDBOX_BACKEND`` or the default.
+
+    ``limits`` wins over ``profile`` (a named profile from ``load_limits``: train | eval).
+    """
+    if limits is None:
+        limits = load_limits(profile)
     requested = backend or os.environ.get(BACKEND_ENV) or ""
     name = requested.strip().lower() or default_backend_name()
     if name not in BACKENDS:
