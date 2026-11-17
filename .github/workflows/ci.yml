@@ -4,18 +4,67 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
+    name: lint, types, unit + subprocess sandbox tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.11"
           enable-cache: true
+      - name: Install bubblewrap (subprocess sandbox isolation)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Sync core + dev dependencies
         run: uv sync --extra dev --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy coderl
-      - run: uv run pytest --cov=coderl --cov-report=term-missing
+      - name: Require full subprocess isolation (bwrap)
+        run: |
+          uv run python -m coderl.sandbox info
+          uv run python -c "from coderl.sandbox.backends.subprocess_backend import detect_isolation as d; assert d()[0] == 'bwrap', d()"
+      - name: Tests (excluding Docker)
+        run: uv run pytest -m "not docker" --cov=coderl --cov-report=term-missing
+
+  sandbox-docker:
+    name: docker sandbox + canonical solutions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Sync core + dev dependencies
+        run: uv sync --extra dev --frozen
+      - name: Cache Hugging Face datasets
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface
+          key: hf-datasets-${{ hashFiles('coderl/data/loaders/*.py') }}
+          restore-keys: hf-datasets-
+      - name: Build processed datasets (MBPP + HumanEval)
+        run: make data
+      - name: Build sandbox image
+        run: make sandbox-image
+      - name: Docker sandbox security suite + canonical solutions (docker)
+        run: uv run pytest -m docker tests/sandbox -rxXs
+      - name: Canonical solutions (subprocess backend)
+        run: uv run pytest -m "not docker" tests/sandbox/test_canonical.py -rxXs
+      - name: No sandbox containers left behind
+        run: test -z "$(docker ps -aq --filter label=coderl.sandbox=1)"
