@@ -1,0 +1,74 @@
+{
+  "date": "2026-11-17T22:04:11+00:00",
+  "dataset": "data/processed/eval_mbpp_test.jsonl",
+  "limits": {
+    "cpu_seconds": 2,
+    "wall_seconds": 4.0,
+    "per_test_seconds": 1.0,
+    "memory_mb": 256,
+    "max_output_bytes": 65536,
+    "max_file_mb": 16,
+    "max_open_files": 64,
+    "max_processes": 16,
+    "audit_hook": true
+  },
+  "machine": {
+    "platform": "darwin",
+    "machine": "arm64",
+    "python": "3.11.18",
+    "cpu_count": 8,
+    "cpu": "Apple M2",
+    "docker": "29.9.3 (linux/arm64)"
+  },
+  "note": "Apple M2 (8 cores) MacBook, macOS, Docker Desktop VM with 8 CPUs; docker backend only (subprocess backend is Linux-only)",
+  "results": [
+    {
+      "backend": "docker",
+      "workers": 1,
+      "problems": 500,
+      "test_cases": 1516,
+      "seconds": 7.487,
+      "problems_per_sec": 66.8,
+      "test_cases_per_sec": 202.5,
+      "latency_ms_p50": 10.7,
+      "latency_ms_p95": 34.4,
+      "latency_ms_mean": 14.9,
+      "statuses": {
+        "passed": 499,
+        "timeout": 1
+      }
+    },
+    {
+      "backend": "docker",
+      "workers": 4,
+      "problems": 500,
+      "test_cases": 1516,
+      "seconds": 2.413,
+      "problems_per_sec": 207.2,
+      "test_cases_per_sec": 628.2,
+      "latency_ms_p50": 12.5,
+      "latency_ms_p95": 39.9,
+      "latency_ms_mean": 19.2,
+      "statuses": {
+        "passed": 499,
+        "timeout": 1
+      }
+    },
+    {
+      "backend": "docker",
+      "workers": 8,
+      "problems": 500,
+      "test_cases": 1516,
+      "seconds": 1.615,
+      "problems_per_sec": 309.6,
+      "test_cases_per_sec": 938.8,
+      "latency_ms_p50": 19.3,
+      "latency_ms_p95": 56.9,
+      "latency_ms_mean": 25.7,
+      "statuses": {
+        "passed": 499,
+        "timeout": 1
+      }
+    }
+  ]
+}
