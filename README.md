@@ -64,9 +64,9 @@ flowchart TB
 ```
 
 ```python
-from coderl.sandbox import get_executor   # CODERL_SANDBOX_BACKEND=subprocess|docker
+from coderl.sandbox import get_executor  # CODERL_SANDBOX_BACKEND=subprocess|docker
 
-with get_executor() as ex:                # docker on macOS/Windows, subprocess on Linux
+with get_executor() as ex:  # docker on macOS/Windows, subprocess on Linux
     res = ex.run(solution_code, problem)  # status, per-test results, num_passed, traceback
     batch = ex.run_batch([(code, problem), ...])
 ```
