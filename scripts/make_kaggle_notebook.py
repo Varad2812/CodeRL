@@ -30,7 +30,7 @@ profile).
 Start with **LIMIT = 10** for a dry run. After checking it, set **LIMIT = None** for the full
 baseline (164 HumanEval + 500 MBPP-test problems per model). **GENERATION_BACKEND = "hf"**
 uses the Hugging Face backend validated by the saved T4 dry run; `"auto"` tries vLLM first.
-Dry runs write to `results/dry_run/`; full runs write to `results/base/`.
+Dry runs write to `results/kaggle_dry_run/`; full runs write to `results/base/`.
 Run **one model at a time**: `MODEL_TAG="qwen0.5b"` first, then download its archive before
 changing to `"qwen1.5b"`. The previous full run exhausted T4 memory with 80 HF sequences;
 this notebook uses **HF_BATCH_SIZE=20**, **EVAL_BATCH_SIZE=8**, and saves completed batches.
@@ -83,7 +83,7 @@ if LIMIT is not None and (type(LIMIT) is not int or LIMIT <= 0):
     raise ValueError("LIMIT must be None (full baseline) or a positive integer (dry run)")
 if GENERATION_BACKEND not in ("hf", "auto"):
     raise ValueError('GENERATION_BACKEND must be "hf" or "auto"')
-RESULTS_DIR = "results/dry_run" if LIMIT is not None else "results/base"
+RESULTS_DIR = "results/kaggle_dry_run" if LIMIT is not None else "results/base"
 ARCHIVE_NAME = ("coderl_results_dry_run" if LIMIT is not None else "coderl_results_base") + "_" + MODEL_TAG
 print("Run:", "DRY RUN" if LIMIT is not None else "FULL BASELINE", "| output:", RESULTS_DIR)"""),
     md("""## 3. Clone the repo and install

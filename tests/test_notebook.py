@@ -11,6 +11,27 @@ import pytest
 NB = Path(__file__).resolve().parents[1] / "notebooks" / "kaggle_eval_base.ipynb"
 
 
+def test_default_dry_run_does_not_overwrite_tracked_results() -> None:
+    """A fresh clone contains old summaries without resume manifests: keep them separate."""
+    import subprocess
+
+    root = NB.parents[1]
+    if not (root / ".git").exists():
+        pytest.skip("requires a Git checkout")
+    nb = nbformat.read(NB, as_version=4)
+    config = next(c.source for c in nb.cells if "REPO_URL =" in c.source)
+    ns: dict = {}
+    exec(config, ns)
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", ns["RESULTS_DIR"]],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert not tracked.stdout.strip(), "new runs must not overwrite committed historical summaries"
+
+
 @pytest.mark.parametrize("limit", [10, None])
 def test_run_configuration_routes_commands_and_archive(tmp_path: Path, limit: int | None) -> None:
     """A limited run must never use the full baseline's output paths."""
@@ -18,7 +39,7 @@ def test_run_configuration_routes_commands_and_archive(tmp_path: Path, limit: in
     config = next(c.source for c in nb.cells if "REPO_URL =" in c.source)
     ns: dict = {}
     exec(config.replace("LIMIT = 10 ", f"LIMIT = {limit!r} "), ns)
-    expected = "results/dry_run" if limit is not None else "results/base"
+    expected = "results/kaggle_dry_run" if limit is not None else "results/base"
     assert ns["RESULTS_DIR"] == expected
     assert ns["GENERATION_BACKEND"] == "hf"
 

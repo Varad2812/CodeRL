@@ -42,3 +42,6 @@ results/**/checkpoints/
 results/**/samples.jsonl.tmp
 results/**/summary.tmp
 *.zip
+
+# Live Kaggle smoke runs; historical dry-run summaries remain versioned
+results/kaggle_dry_run/

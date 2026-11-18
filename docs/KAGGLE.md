@@ -34,7 +34,8 @@ The full baseline requires 164 HumanEval and 500 MBPP-test problems for each mod
    while a generation call is running. Runtime varies with problem length; allow several hours.
 7. Download the selected model's archive from Output after completion:
    `coderl_results_base_qwen0.5b.zip` or `coderl_results_base_qwen1.5b.zip`.
-   Dry-run names start with `coderl_results_dry_run_` and must not be published as baseline scores.
+   New dry runs write to `results/kaggle_dry_run/`, separate from the historical summaries
+   committed under `results/dry_run/`. Dry-run names start with `coderl_results_dry_run_` and must not be published as baseline scores.
 8. For the second model, change MODEL_TAG and repeat the run and download. Validate two full
    summaries per model, four in total: num_problems=164/500, limit=null, sampled n=20, and no
    sandbox_error statuses. Keep the sample archives locally; only summary JSONs go into Git.
