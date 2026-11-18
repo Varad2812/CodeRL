@@ -47,6 +47,7 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "types-PyYAML",
+    "nbformat>=5.9",
 ]
 
 [build-system]
@@ -63,9 +64,13 @@ default-groups = []
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = ["notebooks"]  # notebooks print by design; validated by tests/test_notebook.py
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/make_kaggle_notebook.py" = ["E501"]  # notebook cell sources are embedded strings
 
 [tool.mypy]
 python_version = "3.10"
