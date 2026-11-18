@@ -1,7 +1,10 @@
-.PHONY: install lint typecheck test test-fast test-docker data sandbox-image sandbox-cleanup bench-sandbox all
+.PHONY: install install-hf smoke-eval report lint typecheck test test-fast test-docker data sandbox-image sandbox-cleanup bench-sandbox all
 
 install:
 	uv sync --extra dev
+
+install-hf:  # torch + transformers + accelerate (macOS arm64 / CPU / CUDA); vllm stays Linux-only
+	uv sync --extra dev --extra hf
 
 lint:
 	uv run ruff check .
@@ -32,3 +35,14 @@ bench-sandbox:
 	uv run python scripts/bench_sandbox.py
 
 all: lint typecheck test
+
+SMOKE_MODEL ?= Qwen/Qwen2.5-Coder-0.5B-Instruct
+
+smoke-eval:  # HF generator on MPS/CPU, 5 problems per benchmark, n=2, Docker sandbox
+	CODERL_SANDBOX_BACKEND=docker uv run --extra dev --extra hf python -m coderl.eval.run_benchmarks \
+		--model $(SMOKE_MODEL) --backend hf --benchmarks humaneval,mbpp_test \
+		--out results/smoke/qwen0.5b --limit 5 --n-samples 2 --batch-size 5
+	uv run python -m coderl.eval.report results/smoke
+
+report:
+	uv run python -m coderl.eval.report results/

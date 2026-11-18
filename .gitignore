@@ -33,3 +33,9 @@ checkpoints/
 .DS_Store
 .idea/
 .vscode/
+
+# Eval outputs: only small summary.json files are committed
+*.jsonl.gz
+results/smoke/
+results/**/logs/
+*.zip
