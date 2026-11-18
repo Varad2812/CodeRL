@@ -61,7 +61,7 @@ class HFGenerator(Generator):
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
-            model, revision=revision, torch_dtype=self.dtype
+            model, revision=revision, dtype=self.dtype
         ).to(self.device)  # type: ignore[arg-type]
         if adapter_path:
             from peft import PeftModel
