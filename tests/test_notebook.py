@@ -31,6 +31,10 @@ def test_run_configuration_routes_commands_and_archive(tmp_path: Path, limit: in
     cmd = ns["eval_cmd"]("qwen0.5b", "model")
     assert cmd[cmd.index("--out") + 1] == f"{expected}/qwen0.5b"
     assert cmd[cmd.index("--backend") + 1] == "hf"
+    assert cmd[cmd.index("--hf-batch-size") + 1] == "20"
+    assert cmd[cmd.index("--batch-size") + 1] == "8"
+    assert "--resume" in cmd
+    assert list(ns["MODELS"]) == ["qwen0.5b"], "run one model before downloading its results"
     assert ("--limit" in cmd) == (limit is not None)
     if limit is not None:
         assert cmd[cmd.index("--limit") + 1] == str(limit)
@@ -46,11 +50,40 @@ def test_run_configuration_routes_commands_and_archive(tmp_path: Path, limit: in
     archive = tmp_path / "result.zip"
     archive.write_bytes(b"zip")
     with patch.object(shutil, "make_archive", return_value=str(archive)) as make_archive:
-        package = next(c.source for c in nb.cells if "shutil.make_archive(" in c.source)
+        package = next(c.source for c in nb.cells if c.source.startswith("import shutil"))
         exec(package, ns)
     make_archive.assert_called_once_with(
         f"/kaggle/working/{ns['ARCHIVE_NAME']}", "zip", root_dir=str(tmp_path), base_dir=expected
     )
+
+
+def test_notebook_packages_recovery_files_after_model_failure(tmp_path: Path) -> None:
+    """A failed evaluation cell must still make the checkpoints easy to download."""
+    import os
+    import subprocess
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    nb = nbformat.read(NB, as_version=4)
+    config = next(c.source for c in nb.cells if "REPO_URL =" in c.source)
+    ns: dict = {"os": os, "subprocess": subprocess, "PY": "python", "BACKEND": "hf"}
+    exec(config, ns)
+    ns["WORKDIR"] = str(tmp_path)
+    source = next(c.source for c in nb.cells if "def eval_cmd(" in c.source)
+    failed = SimpleNamespace(returncode=1, poll=lambda: 1)
+    gpu = SimpleNamespace(stdout="GPU 0: Tesla T4")
+    with (
+        patch("subprocess.run", return_value=gpu),
+        patch("subprocess.Popen", return_value=failed),
+        patch("shutil.make_archive", return_value="recovery.zip") as archive,
+        patch("builtins.open", create=True) as opened,
+        patch("os.makedirs"),
+    ):
+        opened.return_value.read.return_value = "simulated CUDA out of memory"
+        with pytest.raises(RuntimeError, match="evaluation failed"):
+            exec(source, ns)
+    assert archive.call_count == 1
+    assert archive.call_args.args[0].endswith("_recovery")
 
 
 def test_hf_install_skips_vllm(tmp_path: Path) -> None:

@@ -24,21 +24,30 @@ profile).
 |---|---|
 | **Accelerator** | **GPU T4 x2** |
 | **Internet** | **On** (needs a phone-verified Kaggle account) |
-| **Persistence** | not needed |
+| **Persistence** | **Files only** (helps retain checkpoints between interactive sessions; also download results) |
 | **Secrets** (*Add-ons → Secrets*) | `WANDB_API_KEY` (optional: logs to W&B project `coderl`), `HF_TOKEN` (optional: avoids Hub rate limits). Tick *Attach to notebook* for each. |
 
 Start with **LIMIT = 10** for a dry run. After checking it, set **LIMIT = None** for the full
 baseline (164 HumanEval + 500 MBPP-test problems per model). **GENERATION_BACKEND = "hf"**
 uses the Hugging Face backend validated by the saved T4 dry run; `"auto"` tries vLLM first.
 Dry runs write to `results/dry_run/`; full runs write to `results/base/`.
+Run **one model at a time**: `MODEL_TAG="qwen0.5b"` first, then download its archive before
+changing to `"qwen1.5b"`. The previous full run exhausted T4 memory with 80 HF sequences;
+this notebook uses **HF_BATCH_SIZE=20**, **EVAL_BATCH_SIZE=8**, and saves completed batches.
+For a long unattended run, choose **Save Version → Save & Run All**; it starts a separate,
+clean session. It does not resume files from the interactive session. For an interactive
+retry with retained files, rerun with the same settings; `--resume` reuses completed batches.
+
+Checkpoints need the files to survive. They cannot recover an already deleted runtime.
+Download the archive after each model and keep **Files only** persistence enabled.
 
 Then **Run All**. With vLLM, expected time: ~10 min install, then roughly 30–90 min of evaluation
-(both models run in parallel, one per T4). If vLLM cannot be installed, it falls back to Hugging
+(time depends on the selected model). If vLLM cannot be installed, it falls back to Hugging
 Face `transformers` automatically (much slower: several hours). Troubleshooting:
 [`docs/KAGGLE.md`](https://github.com/Varad2812/CodeRL/blob/main/docs/KAGGLE.md).
 
-**Output:** `/kaggle/working/coderl_results_dry_run.zip` (dry run) or
-`/kaggle/working/coderl_results_base.zip` (full baseline) (*Output* tab → download). Unzip it into
+**Output:** `/kaggle/working/coderl_results_base_<MODEL_TAG>.zip` for a full selected-model run;
+dry runs use `coderl_results_dry_run_<MODEL_TAG>.zip` (*Output* tab → download). Unzip it into
 the repo root; only the `summary.json` files are committed (samples and logs are gitignored).
 """),
     md("## 1. GPU and Python"),
@@ -52,12 +61,14 @@ if smi.returncode != 0:
     print("WARNING: no GPU visible. Settings -> Accelerator -> 'GPU T4 x2', then restart.")"""),
     md("## 2. Configuration (edit here if needed)"),
     code("""REPO_URL = "https://github.com/Varad2812/CodeRL"
-REPO_REF = "main"                      # branch, tag or commit to evaluate
+REPO_REF = "codex/kaggle-baseline-handoff"  # includes checkpoint/recovery support
 WORKDIR = "/kaggle/working/CodeRL"
-MODELS = {                             # results/base/<tag>/
+MODEL_TAG = "qwen0.5b"                  # finish/download this model, then use "qwen1.5b"
+ALL_MODELS = {                         # results/base/<tag>/
     "qwen0.5b": "Qwen/Qwen2.5-Coder-0.5B-Instruct",
     "qwen1.5b": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
 }
+MODELS = {MODEL_TAG: ALL_MODELS[MODEL_TAG]}
 BENCHMARKS = "humaneval,mbpp_test"
 LIMIT = 10                             # None for the FULL baseline; 10 for a dry run
 GENERATION_BACKEND = "hf"              # "hf" (validated on T4) or "auto" (try vLLM first)
@@ -65,14 +76,15 @@ N_SAMPLES = 20
 DTYPE = "float16"                      # T4 has no bfloat16
 GPU_MEMORY_UTILIZATION = 0.85          # vLLM only: lower (0.7) on OOM
 MAX_MODEL_LEN = 2048                   # vLLM only
-HF_BATCH_SIZE = 80                     # HF only: lower to 40 or 20 on OOM
+HF_BATCH_SIZE = 20                     # HF: 20 sequences, rather than the failing 80
+EVAL_BATCH_SIZE = 8                    # checkpoint and report every 8 problems
 
 if LIMIT is not None and (type(LIMIT) is not int or LIMIT <= 0):
     raise ValueError("LIMIT must be None (full baseline) or a positive integer (dry run)")
 if GENERATION_BACKEND not in ("hf", "auto"):
     raise ValueError('GENERATION_BACKEND must be "hf" or "auto"')
 RESULTS_DIR = "results/dry_run" if LIMIT is not None else "results/base"
-ARCHIVE_NAME = "coderl_results_dry_run" if LIMIT is not None else "coderl_results_base"
+ARCHIVE_NAME = ("coderl_results_dry_run" if LIMIT is not None else "coderl_results_base") + "_" + MODEL_TAG
 print("Run:", "DRY RUN" if LIMIT is not None else "FULL BASELINE", "| output:", RESULTS_DIR)"""),
     md("""## 3. Clone the repo and install
 With `GENERATION_BACKEND="hf"`, installs only the `hf` extra and skips vLLM.
@@ -164,8 +176,8 @@ sh("wc -l data/processed/*.jsonl")
 for _model in MODELS.values():
     sh(f"{PY} -c \\"from huggingface_hub import snapshot_download as s; print(s('{_model}'))\\"")"""),
     md("""## 7. Evaluate both base models
-With two GPUs, each model runs in its own process on its own T4 (`CUDA_VISIBLE_DEVICES`);
-otherwise they run one after the other. Progress (JSON lines) is printed every minute; full
+The selected model runs in a separate process on GPU 0. Download its results before
+selecting the other model in cell 2. Progress (JSON lines) is printed every minute; full
 logs are in `<RESULTS_DIR>/logs/`.
 
 The evaluation processes get **no secrets** (`WANDB_API_KEY` / `HF_TOKEN` are removed from their
@@ -186,7 +198,8 @@ def eval_cmd(tag, model):
         "--out", f"{RESULTS_DIR}/{tag}", "--dtype", DTYPE, "--n-samples", str(N_SAMPLES),
         "--gpu-memory-utilization", str(GPU_MEMORY_UTILIZATION),
         "--max-model-len", str(MAX_MODEL_LEN),
-        "--batch-size", "64", "--hf-batch-size", str(HF_BATCH_SIZE),
+        "--batch-size", str(EVAL_BATCH_SIZE), "--hf-batch-size", str(HF_BATCH_SIZE),
+        "--resume",
         "--sandbox-workers", "2" if N_GPUS > 1 else "4",
     ]
     return cmd + (["--limit", str(LIMIT)] if LIMIT is not None else [])
@@ -195,7 +208,7 @@ def eval_cmd(tag, model):
 def start(tag, model, gpu):
     env = {k: v for k, v in os.environ.items() if k not in SECRETS}
     env.update(CUDA_VISIBLE_DEVICES=str(gpu), TOKENIZERS_PARALLELISM="false", HF_HUB_OFFLINE="1")
-    log = open(f"{RESULTS_DIR}/logs/{tag}.log", "w")
+    log = open(f"{RESULTS_DIR}/logs/{tag}.log", "a")
     print(f"[{tag}] GPU {gpu}: {' '.join(eval_cmd(tag, model))}", flush=True)
     return subprocess.Popen(eval_cmd(tag, model), env=env, stdout=log, stderr=subprocess.STDOUT)
 
@@ -205,7 +218,7 @@ def last_progress(tag):
         lines = open(f"{RESULTS_DIR}/logs/{tag}.log").read().splitlines()
     except OSError:
         return ""
-    keep = [l for l in lines if '"eval_' in l or "WARNING" in l or "generator_fallback" in l]
+    keep = [l for l in lines if '"eval_' in l or '"gen_progress"' in l or "WARNING" in l or "generator_fallback" in l]
     return (keep or lines or [""])[-1][:400]
 
 
@@ -223,13 +236,19 @@ def wait(procs):
 
 
 t0 = time.time()
-items = list(MODELS.items())
-if N_GPUS >= 2:
-    wait({tag: start(tag, model, i) for i, (tag, model) in enumerate(items)})
-else:
-    for tag, model in items:
+try:
+    for tag, model in MODELS.items():
         wait({tag: start(tag, model, 0)})
-print(f"all evaluations done in {(time.time() - t0) / 60:.1f} min")"""),
+    print(f"selected model finished in {(time.time() - t0) / 60:.1f} min")
+finally:
+    # Run All stops at a failed cell. Still package completed batches for recovery.
+    import shutil
+
+    recovery = shutil.make_archive(f"/kaggle/working/{ARCHIVE_NAME}_recovery", "zip",
+                                   root_dir=WORKDIR, base_dir=RESULTS_DIR)
+    print("Recovery archive (may be incomplete):", recovery)
+    print("Download it from Output before ending the session. Checkpoints alone do not "
+          "survive deletion of the runtime.")"""),
     md("## 8. Results table (+ W&B upload if `WANDB_API_KEY` was loaded)"),
     code(
         """sh(f"{PY} -m coderl.eval.report {RESULTS_DIR} --out {RESULTS_DIR}/RESULTS.md --wandb")"""
@@ -239,8 +258,9 @@ print(f"all evaluations done in {(time.time() - t0) / 60:.1f} min")"""),
 
 archive = shutil.make_archive(f"/kaggle/working/{ARCHIVE_NAME}", "zip", root_dir=WORKDIR, base_dir=RESULTS_DIR)
 print("download from the Output tab:", archive, f"({os.path.getsize(archive) / 1e6:.1f} MB)")
-print("Evaluate the full benchmark before publishing baseline scores." if LIMIT is not None else
-      "Full baseline complete. Keep the zip and review all four summary.json files before publishing.")"""),
+print("Dry run only: do not publish baseline scores." if LIMIT is not None else
+      "Selected model complete. Download this archive before evaluating the other model. "
+      "The full baseline requires 164 HumanEval and 500 MBPP-test problems for BOTH models.")"""),
 ]
 
 nb = new_notebook(cells=cells)

@@ -38,4 +38,7 @@ checkpoints/
 *.jsonl.gz
 results/smoke/
 results/**/logs/
+results/**/checkpoints/
+results/**/samples.jsonl.tmp
+results/**/summary.tmp
 *.zip

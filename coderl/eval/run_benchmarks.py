@@ -13,6 +13,7 @@ committed) and ``samples.jsonl.gz`` (every completion; gitignored).
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import os
 import platform
@@ -31,6 +32,7 @@ from typing import Annotated, Any
 import typer
 
 from coderl.data.schema import Problem, read_problems
+from coderl.eval.checkpoints import CheckpointStore
 from coderl.eval.extract import Extraction, extract_code
 from coderl.eval.pass_at_k import mean_pass_at_k
 from coderl.eval.prompts import SYSTEM_PROMPT, render_prompt
@@ -81,6 +83,7 @@ class EvalConfig:
     greedy: bool = True
     sampled: bool = True
     sandbox_workers: int | None = None
+    resume: bool = False
 
     def passes(self) -> list[PassSpec]:
         out = []
@@ -126,6 +129,12 @@ def _git(*args: str) -> str | None:
 
 
 def environment() -> dict[str, Any]:
+    source = hashlib.sha256()
+    package_root = Path(__file__).resolve().parents[1]
+    for path in sorted(package_root.rglob("*.py")):
+        source.update(str(path.relative_to(package_root)).encode())
+        source.update(b"\0")
+        source.update(path.read_bytes())
     versions: dict[str, str | None] = {}
     for pkg in PACKAGES:
         try:
@@ -138,6 +147,7 @@ def environment() -> dict[str, Any]:
         "python": platform.python_version(),
         "platform": f"{sys.platform}-{platform.machine()}",
         "packages": versions,
+        "source_sha256": source.hexdigest(),
     }
     torch = sys.modules.get("torch")  # only report GPUs if a backend already loaded torch
     if torch is not None:
@@ -191,6 +201,7 @@ def run_pass(
     spec: PassSpec,
     cfg: EvalConfig,
     benchmark: str,
+    checkpoints: CheckpointStore | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Generate + execute one pass. Execution of batch i overlaps generation of batch i+1."""
     records: list[dict[str, Any]] = []
@@ -199,10 +210,15 @@ def run_pass(
     prompts = [render_prompt(p, gen) for p in problems]
     n_batches = (len(problems) + cfg.batch_size - 1) // cfg.batch_size
     t_gen = t_exec = 0.0
+    resumed_batches = 0
     start = time.monotonic()
 
     def execute(
-        batch: Sequence[Problem], comps: list[list[Completion]], extracted: list[list[Extraction]]
+        batch: Sequence[Problem],
+        comps: list[list[Completion]],
+        extracted: list[list[Extraction]],
+        batch_idx: int,
+        generation_seconds: float,
     ) -> tuple[list[dict[str, Any]], float]:
         t0 = time.monotonic()
         todo: dict[tuple[str, str], tuple[str, Problem]] = {}
@@ -232,7 +248,20 @@ def run_pass(
                         "result": _result_summary(r),
                     }
                 )
-        return out, time.monotonic() - t0
+        secs = time.monotonic() - t0
+        if checkpoints is not None:
+            # Save in the worker immediately. The next generation batch can fail before
+            # the main thread collects this future; this completed work must survive it.
+            checkpoints.save(spec.name, batch_idx, out, generation_seconds, secs)
+            log.info(
+                "eval_batch_saved",
+                benchmark=benchmark,
+                pass_name=spec.name,
+                batch=batch_idx + 1,
+                batches=n_batches,
+                problems=len(batch),
+            )
+        return out, secs
 
     def collect(fut: Future[tuple[list[dict[str, Any]], float]], batch_idx: int) -> None:
         nonlocal t_exec
@@ -261,6 +290,21 @@ def run_pass(
         for b in range(n_batches):
             lo, hi = b * cfg.batch_size, min((b + 1) * cfg.batch_size, len(problems))
             batch = problems[lo:hi]
+            saved = (
+                checkpoints.load(spec.name, b, [p.task_id for p in batch], spec.n)
+                if checkpoints is not None and cfg.resume
+                else None
+            )
+            if saved is not None:
+                if pending is not None:
+                    collect(*pending)
+                    pending = None
+                t_gen += saved["generation_seconds"]
+                ready: Future[tuple[list[dict[str, Any]], float]] = Future()
+                ready.set_result((saved["records"], saved["execution_seconds"]))
+                collect(ready, b)
+                resumed_batches += 1
+                continue
             t0 = time.monotonic()
             comps = gen.generate(
                 prompts[lo:hi],
@@ -270,13 +314,14 @@ def run_pass(
                 max_new_tokens=cfg.max_new_tokens,
                 seed=cfg.seed + lo,  # per-problem seed = seed + problem index
             )
-            t_gen += time.monotonic() - t0
+            generation_seconds = time.monotonic() - t0
+            t_gen += generation_seconds
             extracted = [
                 [extract_code(c.text, p) for c in cs] for p, cs in zip(batch, comps, strict=True)
             ]
             if pending is not None:
                 collect(*pending)
-            pending = (pool.submit(execute, batch, comps, extracted), b)
+            pending = (pool.submit(execute, batch, comps, extracted, b, generation_seconds), b)
         if pending is not None:
             collect(*pending)
 
@@ -288,7 +333,8 @@ def run_pass(
         "top_p": spec.top_p,
         "metrics": metrics,
         "problems_solved": sum(1 for _, c in counts if c > 0),
-        "unique_programs_executed": len(cache),
+        "unique_programs_executed": len({(r["task_id"], r["code"]) for r in records}),
+        "resumed_batches": resumed_batches,
         "generation_seconds": round(t_gen, 2),
         "execution_seconds": round(t_exec, 2),
         "wall_seconds": round(time.monotonic() - start, 2),
@@ -312,16 +358,41 @@ def evaluate(gen: Generator, executor: Executor, cfg: EvalConfig, benchmark: str
     problems = load_benchmark(benchmark, cfg.data_dir, cfg.limit)
     out_dir = cfg.out / benchmark
     out_dir.mkdir(parents=True, exist_ok=True)
+    env = environment()
+    protocol = {
+        "version": 1,
+        "model": cfg.model,
+        "adapter": cfg.adapter,
+        "benchmark": benchmark,
+        "limit": cfg.limit,
+        "passes": [vars(spec) for spec in cfg.passes()],
+        "seed": cfg.seed,
+        "max_new_tokens": cfg.max_new_tokens,
+        "batch_size": cfg.batch_size,
+        "sandbox_workers": cfg.sandbox_workers,
+        "system_prompt": SYSTEM_PROMPT,
+        "generator": gen.info(),
+        "sandbox": sandbox_info(executor),
+        "problems": [p.model_dump(mode="json") for p in problems],
+        "env": env,
+    }
+    checkpoint_dir = out_dir / "checkpoints"
+    legacy = any((out_dir / name).exists() for name in ("summary.json", "samples.jsonl.gz"))
+    if legacy and not (checkpoint_dir / "manifest.json").exists():
+        raise FileExistsError(f"{out_dir}: legacy results have no checkpoints; use a new --out")
+    checkpoints = CheckpointStore(checkpoint_dir, protocol, resume=cfg.resume)
     t0 = time.monotonic()
     passes: dict[str, Any] = {}
     samples_path = out_dir / "samples.jsonl.gz"
-    with gzip.open(samples_path, "wt", encoding="utf-8") as f:
+    temporary_samples = samples_path.with_suffix(".tmp")
+    with gzip.open(temporary_samples, "wt", encoding="utf-8") as f:
         for spec in cfg.passes():
             log.info("eval_pass_start", benchmark=benchmark, pass_name=spec.name, n=spec.n)
-            records, stats = run_pass(gen, executor, problems, spec, cfg, benchmark)
+            records, stats = run_pass(gen, executor, problems, spec, cfg, benchmark, checkpoints)
             for r in records:
                 f.write(json.dumps(r) + "\n")
             passes[spec.name] = stats
+    temporary_samples.replace(samples_path)
 
     metrics: dict[str, float | None] = {
         "pass@1_greedy": passes.get("greedy", {}).get("metrics", {}).get("pass@1"),
@@ -345,11 +416,15 @@ def evaluate(gen: Generator, executor: Executor, cfg: EvalConfig, benchmark: str
         },
         "generator": gen.info(),
         "sandbox": sandbox_info(executor),
-        "env": environment(),
+        "env": env,
+        "checkpoint_fingerprint": checkpoints.fingerprint,
+        "resume_requested": cfg.resume,
         "wall_seconds": round(time.monotonic() - t0, 2),
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    temporary_summary = out_dir / "summary.tmp"
+    temporary_summary.write_text(json.dumps(summary, indent=2) + "\n")
+    temporary_summary.replace(out_dir / "summary.json")
     log.info("eval_benchmark_done", benchmark=benchmark, out=str(out_dir), metrics=metrics)
     return summary
 
@@ -410,7 +485,10 @@ def main(
     gpu_memory_utilization: Annotated[float, typer.Option()] = 0.85,
     max_model_len: Annotated[int, typer.Option()] = 2048,
     enforce_eager: Annotated[bool, typer.Option(help="vLLM: disable CUDA graphs.")] = False,
-    hf_batch_size: Annotated[int, typer.Option(help="HF: max sequences per forward.")] = 32,
+    hf_batch_size: Annotated[int, typer.Option(help="HF: max sequences per forward.")] = 20,
+    resume: Annotated[
+        bool, typer.Option("--resume", help="Reuse matching completed batch checkpoints.")
+    ] = False,
     fallback_hf: Annotated[
         bool, typer.Option("--fallback-hf/--no-fallback-hf", help="Fall back to HF if vLLM fails.")
     ] = True,
@@ -435,6 +513,7 @@ def main(
         greedy=greedy,
         sampled=sampled,
         sandbox_workers=sandbox_workers,
+        resume=resume,
     )
     gen: Generator
     if backend == "mock":

@@ -1,94 +1,99 @@
-# Running the base-model evaluation on Kaggle
+# Run the base-model evaluation on Kaggle
 
-Notebook: [`notebooks/kaggle_eval_base.ipynb`](../notebooks/kaggle_eval_base.ipynb). It evaluates
-Qwen2.5-Coder-0.5B-Instruct and -1.5B-Instruct (no training) on HumanEval and MBPP-test and
-produces `coderl_results_base.zip` for a full run or `coderl_results_dry_run.zip` for a limited run.
+Notebook: [kaggle_eval_base.ipynb](../notebooks/kaggle_eval_base.ipynb).
+Evaluate Qwen2.5-Coder-0.5B-Instruct first, download its results, then evaluate the 1.5B model.
+The full baseline requires 164 HumanEval and 500 MBPP-test problems for each model.
 
-## Steps
+## Prepare a run
 
-1. **Import the notebook.** On kaggle.com: *Create → New Notebook*, then *File → Import
-   Notebook* and upload `notebooks/kaggle_eval_base.ipynb`, or paste its GitHub URL.
-2. **Settings** (right-hand panel):
-   - *Accelerator* → **GPU T4 x2**
-   - *Internet* → **On**. This needs a phone-verified account (*Settings → Phone verification*).
-3. **Secrets** (*Add-ons → Secrets*). Both are optional. Add each one and tick *Attach to
-   notebook*:
-   - `WANDB_API_KEY`: logs the results to W&B, project `coderl`, job type `eval`.
-   - `HF_TOKEN`: authenticated Hub downloads, which avoids rate limits.
-4. **Choose the run in cell 2.** The default is `LIMIT = 10` and
-   `GENERATION_BACKEND = "hf"`. This uses the backend that completed the saved T4 dry run,
-   skipping the failing vLLM installation/startup path. `"auto"` attempts vLLM with HF fallback.
-   For the full baseline, set **`LIMIT = None`**, keep **`N_SAMPLES = 20`**, and keep
-   **`DTYPE = "float16"`**. Then **Run All**. The cells in order:
-   1. `nvidia-smi` and the Python version.
-   2. Configuration: models, `LIMIT`, `N_SAMPLES`, `DTYPE=float16`, GPU memory fraction.
-   3. Clone the repo and install `.[hf]` for explicit HF mode. In `"auto"` mode, install
-      `.[gen]` (vLLM 0.18.1 / torch 2.10) and probe vLLM in a fresh interpreter; installation,
-      import or engine startup failures fall back to HF with a warning.
-   4. `apt-get install bubblewrap` (failure here is not fatal), then print the sandbox
-      isolation level.
-   5. Load the secrets.
-   6. Build the datasets and download both models. This cell runs in the kernel, which holds
-      `HF_TOKEN`.
-   7. Evaluate. Each model runs in its own process on its own T4. Progress is printed every
-      minute, and the full logs are in `<RESULTS_DIR>/logs/<tag>.log`. These processes get **no
-      secrets** in their environment (see *Security* below).
-   8. Print the results table (also written to `<RESULTS_DIR>/RESULTS.md`) and upload to W&B.
-   9. Zip the selected results folder to `/kaggle/working/coderl_results_base.zip` (full run)
-      or `/kaggle/working/coderl_results_dry_run.zip` (limited run).
-5. **Download** the zip from the *Output* tab. A full run must have **four summaries**:
-   two models times two benchmarks. Check `num_problems` is **164** for HumanEval and **500**
-   for MBPP-test, `limit` is **null**, sampled `n` is **20**, and `sandbox_error` counts are zero.
-   Only then import the full summaries into `results/base/` and publish baseline numbers.
-   `samples.jsonl.gz` and logs are gitignored; keep the zip locally for audit.
+1. Import the updated notebook using File -> Import Notebook.
+2. Under Session options choose GPU T4 x2, Internet On, and **Persistence -> Files only**.
+   Persistence helps carry working files between interactive sessions; keep downloaded backups.
+3. Optional: attach HF_TOKEN and WANDB_API_KEY under Add-ons -> Secrets. Do not put keys
+   into code cells. Model downloads run before evaluation; the evaluation process receives
+   neither key, and W&B logging happens afterwards.
+4. In cell 2 choose:
 
-Dry runs write to **`results/dry_run/`** and cannot overwrite `results/base/`. The verified
-10-problem run is documented in [BASELINE_DRY_RUN.md](BASELINE_DRY_RUN.md). Its scores are
-smoke-test diagnostics; the main README results remain TBD until the complete benchmarks run.
+   ```python
+   MODEL_TAG = "qwen0.5b"  # use "qwen1.5b" only after downloading the 0.5B results
+   LIMIT = None  # 10 for a small dry run; None for the full baseline
+   GENERATION_BACKEND = "hf"
+   HF_BATCH_SIZE = 20
+   EVAL_BATCH_SIZE = 8
+   ```
 
-Tip: the default `LIMIT = 10` runs a small end-to-end check before spending GPU time on the full baseline.
+   Keep N_SAMPLES=20 and DTYPE="float16". Keep REPO_REF set to the recovery branch supplied
+   by this notebook so the evaluator supports --resume. Changes to source, data, model,
+   sampling or batch settings are detected before checkpoint reuse.
+5. For a long unattended run, use **Save Version -> Save & Run All**. Kaggle starts a separate,
+   clean session and saves the completed version with its outputs. This does not reuse files
+   from an interactive session. To retry an interrupted interactive run using retained files,
+   run the cells in the same interactive workspace with unchanged settings instead.
+6. Check progress in section 7. HF logs generation progress inside each 8-problem batch;
+   eval_batch_saved confirms its execution results were checkpointed. A status line can repeat
+   while a generation call is running. Runtime varies with problem length; allow several hours.
+7. Download the selected model's archive from Output after completion:
+   `coderl_results_base_qwen0.5b.zip` or `coderl_results_base_qwen1.5b.zip`.
+   Dry-run names start with `coderl_results_dry_run_` and must not be published as baseline scores.
+8. For the second model, change MODEL_TAG and repeat the run and download. Validate two full
+   summaries per model, four in total: num_problems=164/500, limit=null, sampled n=20, and no
+   sandbox_error statuses. Keep the sample archives locally; only summary JSONs go into Git.
 
-Expected time with vLLM: about 10 minutes to install, then roughly 30–90 minutes of evaluation.
-Each model runs 664 problems × 21 completions. With the HF fallback, expect several hours.
+[Notebook versions and Save & Run All](https://www.kaggle.com/docs/notebooks) and
+[Files only persistence (Kaggle staff)](https://www.kaggle.com/discussions/product-feedback/355440).
 
-## Why vLLM 0.18.1
+## Recovery and limits
 
-- Python 3.10–3.13 wheels (`cp38-abi3`). Kaggle's Python is somewhere in that range. The
-  newest vLLM releases need Python ≥ 3.11.
-- torch 2.10 / CUDA 12.8 wheels still include kernels for the T4 (compute capability 7.5).
-- The saved T4 dry run installed this version, but engine startup failed in FlashInfer's
-  JIT linker: `/usr/bin/ld: cannot find -lcuda`. An import probe alone does not prove the
-  engine works. HF fallback completed all four evaluations; HF is the notebook default.
-- T4 evaluation uses `--dtype float16`. Auto-selected attention backends depend on vLLM and
-  the runtime; do not assume Triton will be selected.
+Every completed generation/execution batch is atomically written as compressed JSON under
+`results/<run>/<model>/<benchmark>/checkpoints/`. The notebook passes --resume automatically:
+a matching retry loads completed batches instead of regenerating them. Final summary.json
+and samples.jsonl.gz are published atomically only after the benchmark's enabled passes finish.
+
+Checkpoint manifests fingerprint the model/backend, complete problem contents, decoding and
+batch settings, sandbox limits, code commit and environment metadata. Mismatched protocols,
+legacy summaries without manifests, and incomplete/duplicate saved samples are rejected.
+Use a separate output directory for a deliberately different protocol. Do not combine samples
+from retries that used different settings into a single pass@k estimate.
+
+If a model process fails, section 7 still creates a `*_recovery.zip` containing the completed
+batch files, logs and any finished summaries. Download it before ending the session. A failed
+run's archive may be incomplete; inspect summaries before claiming a full baseline. Retained
+checkpoints or an unpacked recovery archive can be reused by the same code/environment and
+settings. Without the files, resume is impossible. Neither disk checkpoints nor Files only
+persistence guarantee recovery from every runtime deletion or crash.
+
+For resumed results, pass generation/execution times include saved batch times; wall_seconds
+measures the current invocation. resumed_batches records reused work in each pass.
+
+## Why HF is the default
+
+The verified 10-problem T4 run completed via HF. vLLM 0.18.1 installed but FlashInfer engine
+startup failed at the CUDA linker: `cannot find -lcuda`. Explicit HF mode skips that path;
+`GENERATION_BACKEND="auto"` remains an opt-in vLLM attempt with HF fallback. This project
+still pins vLLM 0.18.1 for that route. GPU validation of the smaller full-run batch remains
+necessary; offline recovery tests cannot establish GPU memory requirements.
+
+The original full 1.5B run exhausted a T4 with HF_BATCH_SIZE=80. Twenty sequences per forward
+uses less peak memory and is the new default. EVAL_BATCH_SIZE=8 controls checkpoint cadence;
+it is distinct from the number of sequences sent through the model at once. N_SAMPLES=20
+remains unchanged so sampled pass@1 and pass@10 use the intended estimator.
 
 ## Troubleshooting
 
-| Symptom | Fix |
+| Symptom | Action |
 |---|---|
-| HF: `CUDA out of memory` | In cell 2 lower `HF_BATCH_SIZE` from 80 to 40 or 20. vLLM memory settings do not affect HF. |
-| vLLM: `CUDA out of memory` / `No available memory for the cache blocks` | In cell 2, lower `GPU_MEMORY_UTILIZATION` (0.7, then 0.6) and/or `MAX_MODEL_LEN` (1536). Prompts plus 512 new tokens fit in 1536. |
-| `Bfloat16 is only supported on GPUs with compute capability of at least 8.0` | `DTYPE` must be `"float16"` (the default in cell 2). |
-| vLLM install, import or engine startup fails | The run continues with the HF backend. To retry vLLM, *Run → Restart & clear cell outputs* and run again. If it still fails, set `DTYPE="float16"` and keep the HF fallback. The results are comparable; HF is only slower. |
-| `Ninja build failed` / `cannot find -lcuda` | Set `GENERATION_BACKEND="hf"` in cell 2 and rerun from cell 2. This bypasses vLLM/FlashInfer; no driver or dependency changes are needed for that route. |
-| CUDA graph capture errors or hangs at start-up | Add `"--enforce-eager"` to the command list in `eval_cmd` in cell 7. |
-| Only one GPU visible | The models run one after the other on GPU 0. Check that *Accelerator* is **T4 x2**. |
-| `pip` dependency-conflict warnings | Check which packages conflict. If torch, transformers, vLLM or CUDA packages are affected, do not assume the warning is harmless. Explicit HF mode avoids the vLLM stack replacement. |
-| Dataset download fails | Internet must be **On**. Add `HF_TOKEN` if the Hub rate-limits you. |
-| A model's process fails | Cell 7 prints the last 40 log lines. The full log is in `<RESULTS_DIR>/logs/<tag>.log`. |
-| Session timeout (12 h) | Run one model per session. Delete the other entry from `MODELS` in cell 2. |
+| HF CUDA out of memory | Preserve the recovery archive first. Confirm HF_BATCH_SIZE=20; changing memory/decoding settings requires a new output directory because the checkpoint protocol must match. Do not restart the full evaluation with 80. |
+| No summaries after a session reset | Check retained checkpoint files or downloaded recovery archives. Old notebook output text alone cannot restore the JSON results. |
+| Checkpoint protocol differs | Restore the exact original code/environment/settings or use a new output directory. Do not delete completed baseline files just to silence this check. |
+| Cannot find -lcuda / vLLM Ninja build failed | Keep GENERATION_BACKEND="hf" to avoid the vLLM startup path. |
+| pip dependency conflicts | Inspect affected packages. Gradio/Diffusers are not used here; conflicts affecting torch, transformers or CUDA need investigation. |
+| Download fails | Verify Internet On. HF_TOKEN can help with Hub rate limits. |
+| A process fails | Read the actual traceback above the final evaluation-failed wrapper and download the recovery archive. |
 
-## Security
+## Sandbox
 
-Generated code runs in the subprocess sandbox. Kaggle notebooks run inside a container that
-usually blocks the user namespaces bubblewrap needs, so isolation often drops to `unshare` or
-`none`. The level reached is printed in cell 4 and stored in every `summary.json` under
-`sandbox.isolation`.
-
-At `none`, generated code still has rlimits, the in-process audit hook and a scrubbed
-environment. It can still read files and use the network as the notebook user, including the
-parent process's environment through `/proc`. For that reason the evaluation processes start
-without `WANDB_API_KEY` / `HF_TOKEN`. The models are downloaded beforehand, and W&B logging
-runs afterwards from the summaries (`python -m coderl.eval.report results/base --wandb`). For
-untrusted (RL-trained) policies, prefer a machine where `python -m coderl.sandbox info` reports
-`bwrap`. See [SECURITY.md](../SECURITY.md).
+Kaggle may block the namespaces required by bubblewrap and unshare. The subprocess backend
+then reports isolation=none: resource limits and an in-process audit hook remain, but OS-enforced
+filesystem/network isolation is absent. The achieved level is stored in summaries. Keep secrets
+out of the evaluation process. RL-trained or otherwise adversarial policies need a host with
+strong OS isolation; see [SECURITY.md](../SECURITY.md).

@@ -59,7 +59,7 @@ the full Kaggle run
 | Decoding | max 512 new tokens, no repetition penalty or top-k, fixed seeds (per-problem seed = seed + index) |
 | Extraction | first ```` ```python ```` block (fallback: any fence, then raw text); main guards, asserts and example calls removed. For HumanEval, a body-only answer gets its signature back, and the prompt's imports/helpers are prepended (the official protocol runs prompt + completion). Every completion records its `extraction_status`. |
 | Execution | sandbox, `eval` limit profile (6 s CPU, 12 s wall, 6 s per test, 256 MB). Correct = every test passes **and** no integrity flags (e.g. `custom_eq`). |
-| Outputs | `results/<run>/<benchmark>/summary.json` (committed): metrics, error/timeout/extraction breakdowns, sandbox isolation level, git commit, package versions. `samples.jsonl.gz` holds every completion (not committed). |
+| Outputs | `results/<run>/<benchmark>/summary.json` (committed): metrics, error/timeout/extraction breakdowns, sandbox isolation level, git commit, package versions. `samples.jsonl.gz` holds every completion (not committed). Completed batches are checkpointed for matching `--resume` retries; download the recovery archive before a Kaggle session ends. |
 
 ```bash
 make install-hf && make smoke-eval   # Mac: HF on MPS, 5 problems/benchmark, n=2, Docker sandbox
@@ -159,7 +159,7 @@ coderl/
   app/        (Phase 5) FastAPI backend
   utils/      structured logging, settings
 docker/       sandbox image (sandbox.Dockerfile)
-notebooks/    Kaggle notebook (base-model eval); docs/KAGGLE.md
+notebooks/    Kaggle notebook (one model per run, checkpoint recovery); docs/KAGGLE.md
 scripts/      benchmarks
 tests/        offline unit tests (no network); tests/sandbox = security suite
 ```

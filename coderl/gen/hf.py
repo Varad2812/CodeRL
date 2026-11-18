@@ -45,7 +45,7 @@ class HFGenerator(Generator):
         dtype: str = "auto",
         device: str | None = None,
         adapter_path: str | None = None,
-        max_batch_size: int = 32,
+        max_batch_size: int = 20,
         revision: str | None = None,
     ) -> None:
         import torch
@@ -136,6 +136,13 @@ class HFGenerator(Generator):
                     ntok = len(toks) if cut is None else cut + 1
                     row.append(Completion(text=text, num_tokens=ntok, finish_reason=finish))
                 out.append(row)
+            log.info(
+                "gen_progress",
+                backend=self.name,
+                prompts_done=min(start + len(chunk), len(prompts)),
+                prompts=len(prompts),
+                samples_per_prompt=n,
+            )
         return out
 
     def close(self) -> None:
