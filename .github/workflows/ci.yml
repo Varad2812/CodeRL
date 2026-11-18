@@ -10,13 +10,18 @@ concurrency:
 
 jobs:
   check:
-    name: lint, types, unit + subprocess sandbox tests
+    name: lint, types, unit + subprocess sandbox tests (py${{ matrix.python }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Kaggle/Colab ship one of these; the subprocess sandbox runs on the host interpreter
+        python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3  # upstream publishes no moving major tag
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           enable-cache: true
       - name: Install bubblewrap (subprocess sandbox isolation)
         run: |
@@ -28,7 +33,7 @@ jobs:
         run: uv sync --extra dev --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy coderl
+      - run: uv run mypy coderl --python-version ${{ matrix.python }}
       - name: Require full subprocess isolation (bwrap)
         run: |
           uv run python -m coderl.sandbox info
