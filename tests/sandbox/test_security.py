@@ -90,7 +90,8 @@ class TestCorrectness:
         for leak in ("harness", "runner", "/opt/coderl", "site-packages", "re/_parser"):
             assert leak not in r.traceback
         assert "line 4, in helper" in r.traceback
-        assert r.traceback.rstrip().splitlines()[-1].startswith("re.error")
+        # Python 3.13 renamed re.error to re.PatternError (old name kept as an alias)
+        assert r.traceback.rstrip().splitlines()[-1].startswith(("re.error", "re.PatternError"))
 
     def test_traceback_is_truncated(self, executor: Executor) -> None:
         r = executor.run("def f(x):\n    return f(x)\n", problem(["assert f(1) == 1"]))
