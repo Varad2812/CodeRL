@@ -17,7 +17,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -168,7 +168,7 @@ def main(
     sys.stdout.write("\n".join(lines) + "\n")
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "date": datetime.now(UTC).isoformat(timespec="seconds"),
+        "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset": str(DATA),
         "limits": SandboxLimits().model_dump(),
         "machine": _machine(),

@@ -16,7 +16,9 @@ def configure_logging(level: str | None = None) -> None:
     """Configure structlog to emit JSON lines to stdout."""
     global _configured
     level_name = (level or os.environ.get("CODERL_LOG_LEVEL", "INFO")).upper()
-    level_no = logging.getLevelNamesMapping().get(level_name, logging.INFO)
+    level_no = getattr(logging, level_name, None)  # getLevelNamesMapping() is 3.11+
+    if not isinstance(level_no, int):
+        level_no = logging.INFO
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

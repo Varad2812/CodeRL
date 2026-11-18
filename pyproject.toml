@@ -3,7 +3,7 @@ name = "coderl"
 version = "0.1.0"
 description = "Self-improving coding agent via RL from execution feedback (GRPO + sandboxed unit tests)"
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.10,<3.14"
 license = { text = "MIT" }
 dependencies = [
     "datasets>=2.19",
@@ -25,8 +25,17 @@ train = [
     "wandb",
     "accelerate",
 ]
+# Hugging Face generation backend: CPU, Apple MPS and CUDA (Mac smoke tests, vLLM fallback).
+hf = [
+    "torch>=2.4",
+    "transformers>=4.56,<5",
+    "accelerate>=1.0",
+]
+# vLLM generation (Linux x86_64 + CUDA only). 0.18.1: Python 3.10-3.13, torch 2.10 (CUDA 12.8),
+# reported working on Kaggle 2x T4 (SM75: float16, Triton attention backend). See docs/KAGGLE.md.
 gen = [
-    "vllm; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "coderl[hf]",
+    "vllm==0.18.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 app = [
     "fastapi",
@@ -53,13 +62,13 @@ default-groups = []
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "T20"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.10"
 ignore_missing_imports = true
 files = ["coderl"]
 
