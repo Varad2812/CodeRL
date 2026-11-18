@@ -27,12 +27,18 @@ profile).
 | **Persistence** | not needed |
 | **Secrets** (*Add-ons → Secrets*) | `WANDB_API_KEY` (optional: logs to W&B project `coderl`), `HF_TOKEN` (optional: avoids Hub rate limits). Tick *Attach to notebook* for each. |
 
-Then **Run All**. Expected time: ~10 min install, then roughly 30–90 min of evaluation
+Start with **LIMIT = 10** for a dry run. After checking it, set **LIMIT = None** for the full
+baseline (164 HumanEval + 500 MBPP-test problems per model). **GENERATION_BACKEND = "hf"**
+uses the Hugging Face backend validated by the saved T4 dry run; `"auto"` tries vLLM first.
+Dry runs write to `results/dry_run/`; full runs write to `results/base/`.
+
+Then **Run All**. With vLLM, expected time: ~10 min install, then roughly 30–90 min of evaluation
 (both models run in parallel, one per T4). If vLLM cannot be installed, it falls back to Hugging
 Face `transformers` automatically (much slower: several hours). Troubleshooting:
 [`docs/KAGGLE.md`](https://github.com/Varad2812/CodeRL/blob/main/docs/KAGGLE.md).
 
-**Output:** `/kaggle/working/coderl_results_base.zip` (*Output* tab → download). Unzip it into
+**Output:** `/kaggle/working/coderl_results_dry_run.zip` (dry run) or
+`/kaggle/working/coderl_results_base.zip` (full baseline) (*Output* tab → download). Unzip it into
 the repo root; only the `summary.json` files are committed (samples and logs are gitignored).
 """),
     md("## 1. GPU and Python"),
@@ -53,13 +59,24 @@ MODELS = {                             # results/base/<tag>/
     "qwen1.5b": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
 }
 BENCHMARKS = "humaneval,mbpp_test"
-LIMIT = None                           # e.g. 10 for a quick dry run of the whole notebook
+LIMIT = 10                             # None for the FULL baseline; 10 for a dry run
+GENERATION_BACKEND = "hf"              # "hf" (validated on T4) or "auto" (try vLLM first)
 N_SAMPLES = 20
 DTYPE = "float16"                      # T4 has no bfloat16
-GPU_MEMORY_UTILIZATION = 0.85          # lower (0.7) if vLLM runs out of memory
-MAX_MODEL_LEN = 2048"""),
+GPU_MEMORY_UTILIZATION = 0.85          # vLLM only: lower (0.7) on OOM
+MAX_MODEL_LEN = 2048                   # vLLM only
+HF_BATCH_SIZE = 80                     # HF only: lower to 40 or 20 on OOM
+
+if LIMIT is not None and (type(LIMIT) is not int or LIMIT <= 0):
+    raise ValueError("LIMIT must be None (full baseline) or a positive integer (dry run)")
+if GENERATION_BACKEND not in ("hf", "auto"):
+    raise ValueError('GENERATION_BACKEND must be "hf" or "auto"')
+RESULTS_DIR = "results/dry_run" if LIMIT is not None else "results/base"
+ARCHIVE_NAME = "coderl_results_dry_run" if LIMIT is not None else "coderl_results_base"
+print("Run:", "DRY RUN" if LIMIT is not None else "FULL BASELINE", "| output:", RESULTS_DIR)"""),
     md("""## 3. Clone the repo and install
-Installs CodeRL with the `gen` extra (pins `vllm==0.18.1`, which replaces Kaggle's torch with
+With `GENERATION_BACKEND="hf"`, installs only the `hf` extra and skips vLLM.
+With `"auto"`, installs CodeRL with the `gen` extra (pins `vllm==0.18.1`, which replaces Kaggle's torch with
 torch 2.10). vLLM is then imported in a *fresh* interpreter; if that fails, the run uses the
 Hugging Face backend instead (printed loudly below)."""),
     code("""import os
@@ -83,24 +100,29 @@ os.chdir(WORKDIR)
 sh("git log --oneline -1")
 
 PY = sys.executable
-if sh(f'{PY} -m pip install -q -e ".[gen]"', check=False) != 0:
-    print("\\n*** WARNING: installing the [gen] extra (vLLM) failed; installing [hf] only ***\\n")
+if GENERATION_BACKEND == "hf":
     sh(f'{PY} -m pip install -q -e ".[hf]"')
-
-probe = subprocess.run(
-    [PY, "-c", "import vllm, torch; print(vllm.__version__, torch.__version__, torch.version.cuda, torch.cuda.is_available())"],
-    capture_output=True, text=True,
-)
-if probe.returncode == 0 and probe.stdout.strip().endswith("True"):
-    BACKEND = "vllm"
-    print("vLLM OK (vllm, torch, cuda, gpu):", probe.stdout.strip())
-else:
     BACKEND = "hf"
-    print("\\n" + "*" * 80)
-    print("WARNING: vLLM is not usable here -> falling back to the Hugging Face backend.")
-    print("Results are equivalent but generation is MUCH slower (hours). Details:")
-    print((probe.stdout + probe.stderr)[-3000:])
-    print("*" * 80 + "\\n")
+    print("Hugging Face selected explicitly; skipping vLLM install and engine startup.")
+else:
+    if sh(f'{PY} -m pip install -q -e ".[gen]"', check=False) != 0:
+        print("\\n*** WARNING: installing the [gen] extra (vLLM) failed; installing [hf] only ***\\n")
+        sh(f'{PY} -m pip install -q -e ".[hf]"')
+
+    probe = subprocess.run(
+        [PY, "-c", "import vllm, torch; print(vllm.__version__, torch.__version__, torch.version.cuda, torch.cuda.is_available())"],
+        capture_output=True, text=True,
+    )
+    if probe.returncode == 0 and probe.stdout.strip().endswith("True"):
+        BACKEND = "vllm"
+        print("vLLM OK (vllm, torch, cuda, gpu):", probe.stdout.strip())
+    else:
+        BACKEND = "hf"
+        print("\\n" + "*" * 80)
+        print("WARNING: vLLM is not usable here -> falling back to the Hugging Face backend.")
+        print("Results are equivalent but generation is MUCH slower (hours). Details:")
+        print((probe.stdout + probe.stderr)[-3000:])
+        print("*" * 80 + "\\n")
 print("generation backend:", BACKEND)"""),
     md("""## 4. Sandbox isolation
 Tries to install `bubblewrap` (non-fatal). The isolation level actually used is also stored
@@ -144,7 +166,7 @@ for _model in MODELS.values():
     md("""## 7. Evaluate both base models
 With two GPUs, each model runs in its own process on its own T4 (`CUDA_VISIBLE_DEVICES`);
 otherwise they run one after the other. Progress (JSON lines) is printed every minute; full
-logs are in `results/base/logs/`.
+logs are in `<RESULTS_DIR>/logs/`.
 
 The evaluation processes get **no secrets** (`WANDB_API_KEY` / `HF_TOKEN` are removed from their
 environment): unless the sandbox reached `bwrap` isolation, generated code could read its
@@ -154,33 +176,33 @@ parent's environment. W&B logging happens afterwards, in step 8."""),
 gpus = [l for l in subprocess.run("nvidia-smi -L", shell=True, capture_output=True, text=True).stdout.splitlines() if l.startswith("GPU")]
 N_GPUS = max(1, len(gpus))
 SECRETS = ("WANDB_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "KAGGLE_KEY")
-os.makedirs("results/base/logs", exist_ok=True)
+os.makedirs(f"{RESULTS_DIR}/logs", exist_ok=True)
 
 
 def eval_cmd(tag, model):
     cmd = [
         PY, "-m", "coderl.eval.run_benchmarks",
         "--model", model, "--backend", BACKEND, "--benchmarks", BENCHMARKS,
-        "--out", f"results/base/{tag}", "--dtype", DTYPE, "--n-samples", str(N_SAMPLES),
+        "--out", f"{RESULTS_DIR}/{tag}", "--dtype", DTYPE, "--n-samples", str(N_SAMPLES),
         "--gpu-memory-utilization", str(GPU_MEMORY_UTILIZATION),
         "--max-model-len", str(MAX_MODEL_LEN),
-        "--batch-size", "64", "--hf-batch-size", "80",
+        "--batch-size", "64", "--hf-batch-size", str(HF_BATCH_SIZE),
         "--sandbox-workers", "2" if N_GPUS > 1 else "4",
     ]
-    return cmd + (["--limit", str(LIMIT)] if LIMIT else [])
+    return cmd + (["--limit", str(LIMIT)] if LIMIT is not None else [])
 
 
 def start(tag, model, gpu):
     env = {k: v for k, v in os.environ.items() if k not in SECRETS}
     env.update(CUDA_VISIBLE_DEVICES=str(gpu), TOKENIZERS_PARALLELISM="false", HF_HUB_OFFLINE="1")
-    log = open(f"results/base/logs/{tag}.log", "w")
+    log = open(f"{RESULTS_DIR}/logs/{tag}.log", "w")
     print(f"[{tag}] GPU {gpu}: {' '.join(eval_cmd(tag, model))}", flush=True)
     return subprocess.Popen(eval_cmd(tag, model), env=env, stdout=log, stderr=subprocess.STDOUT)
 
 
 def last_progress(tag):
     try:
-        lines = open(f"results/base/logs/{tag}.log").read().splitlines()
+        lines = open(f"{RESULTS_DIR}/logs/{tag}.log").read().splitlines()
     except OSError:
         return ""
     keep = [l for l in lines if '"eval_' in l or "WARNING" in l or "generator_fallback" in l]
@@ -195,7 +217,7 @@ def wait(procs):
     failed = [t for t, p in procs.items() if p.returncode != 0]
     for tag in failed:
         print(f"\\n===== {tag} FAILED (exit {procs[tag].returncode}); last log lines =====")
-        print("\\n".join(open(f"results/base/logs/{tag}.log").read().splitlines()[-40:]))
+        print("\\n".join(open(f"{RESULTS_DIR}/logs/{tag}.log").read().splitlines()[-40:]))
     if failed:
         raise RuntimeError(f"evaluation failed for {failed}; see docs/KAGGLE.md troubleshooting")
 
@@ -210,14 +232,15 @@ else:
 print(f"all evaluations done in {(time.time() - t0) / 60:.1f} min")"""),
     md("## 8. Results table (+ W&B upload if `WANDB_API_KEY` was loaded)"),
     code(
-        """sh(f"{PY} -m coderl.eval.report results/base --out results/base/RESULTS.md --wandb")"""
+        """sh(f"{PY} -m coderl.eval.report {RESULTS_DIR} --out {RESULTS_DIR}/RESULTS.md --wandb")"""
     ),
     md("## 9. Package the results for download"),
     code("""import shutil
 
-archive = shutil.make_archive("/kaggle/working/coderl_results_base", "zip", root_dir=WORKDIR, base_dir="results/base")
+archive = shutil.make_archive(f"/kaggle/working/{ARCHIVE_NAME}", "zip", root_dir=WORKDIR, base_dir=RESULTS_DIR)
 print("download from the Output tab:", archive, f"({os.path.getsize(archive) / 1e6:.1f} MB)")
-print("then, in your local clone:  unzip coderl_results_base.zip  &&  git add results/base/*/*/summary.json")"""),
+print("Evaluate the full benchmark before publishing baseline scores." if LIMIT is not None else
+      "Full baseline complete. Keep the zip and review all four summary.json files before publishing.")"""),
 ]
 
 nb = new_notebook(cells=cells)

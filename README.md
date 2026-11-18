@@ -42,7 +42,10 @@ flowchart LR
 | Rejection-SFT    | TBD              | TBD               | TBD              | TBD               |
 | GRPO             | TBD              | TBD               | TBD              | TBD               |
 
-No numbers yet. The base-model rows come from the Kaggle run
+Full benchmark numbers are pending. A [verified 10-problem dry run](docs/BASELINE_DRY_RUN.md)
+completed both models and benchmarks using Hugging Face on T4; those limited scores are kept
+separately in `results/dry_run/` and are not baseline claims. The base-model rows come from
+the full Kaggle run
 ([`docs/KAGGLE.md`](docs/KAGGLE.md)); `python -m coderl.eval.report results/` generates the table.
 
 ## Evaluation
