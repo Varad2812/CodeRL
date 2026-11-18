@@ -7,6 +7,7 @@ python -m coderl.eval.report results/ --out results/README.md
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Annotated, Any
@@ -84,15 +85,69 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def log_to_wandb(summaries: list[dict[str, Any]]) -> int:
+    """One W&B run (project "coderl", job_type "eval") per model+adapter, if WANDB_API_KEY is
+    set and wandb is installed; otherwise a silent no-op. Returns the number of runs logged."""
+    if not os.environ.get("WANDB_API_KEY") or not summaries:
+        return 0
+    try:
+        import wandb
+    except ImportError:
+        return 0
+    groups: dict[tuple[str, str | None], list[dict[str, Any]]] = {}
+    for s in summaries:
+        groups.setdefault((s["model"], s.get("adapter")), []).append(s)
+    logged = 0
+    for (model, adapter), group in groups.items():
+        try:
+            first = group[0]
+            run = wandb.init(
+                project="coderl",
+                job_type="eval",
+                name=f"eval-{model.split('/')[-1]}" + (f"-{Path(adapter).name}" if adapter else ""),
+                config={
+                    "model": model,
+                    "adapter": adapter,
+                    "benchmarks": [s["benchmark"] for s in group],
+                    "config": first.get("config"),
+                    "generator": first.get("generator"),
+                    "sandbox": first.get("sandbox"),
+                    "env": first.get("env"),
+                },
+                reinit=True,
+            )
+            flat: dict[str, Any] = {}
+            for s in group:
+                b = s["benchmark"]
+                flat.update({f"{b}/{k}": v for k, v in s["metrics"].items() if v is not None})
+                for pname, p in s.get("passes", {}).items():
+                    d = p["diagnostics"]
+                    for key in ("syntax_error_rate", "timeout_rate", "runtime_error_rate"):
+                        flat[f"{b}/{pname}/{key}"] = d[key]
+            run.log(flat)
+            run.summary.update(flat)
+            run.finish()
+            logged += 1
+        except Exception as exc:  # noqa: BLE001 - logging must never fail an eval
+            sys.stderr.write(f"W&B logging failed for {model}: {exc!r}\n")
+    return logged
+
+
 @app.command()
 def main(
     root: Annotated[Path, typer.Argument(help="Results dir (searched recursively) or file.")],
     out: Annotated[Path | None, typer.Option(help="Also write the table here.")] = None,
+    wandb: Annotated[
+        bool, typer.Option("--wandb", help="Also log the summaries to W&B (needs WANDB_API_KEY).")
+    ] = False,
 ) -> None:
-    table = render_table(load_summaries(root))
+    summaries = load_summaries(root)
+    table = render_table(summaries)
     sys.stdout.write(table + "\n")
     if out:
         out.write_text(table + "\n")
+    if wandb:
+        sys.stdout.write(f"W&B runs logged: {log_to_wandb(summaries)}\n")
 
 
 if __name__ == "__main__":

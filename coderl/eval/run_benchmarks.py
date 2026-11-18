@@ -22,7 +22,7 @@ import time
 from collections import Counter
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
@@ -51,6 +51,7 @@ STATUSES = (
     "memory_exceeded",
     "sandbox_error",
 )
+SECRET_ENV = ("WANDB_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 PACKAGES = ("coderl", "torch", "transformers", "vllm", "accelerate", "peft", "numpy", "pydantic")
 
 
@@ -353,56 +354,32 @@ def evaluate(gen: Generator, executor: Executor, cfg: EvalConfig, benchmark: str
     return summary
 
 
-def _wandb_log(cfg: EvalConfig, summaries: list[dict[str, Any]]) -> None:
-    if not os.environ.get("WANDB_API_KEY") or not summaries:
-        return
-    try:
-        import wandb
-    except ImportError:
-        log.info("wandb_skipped", reason="wandb not installed")
-        return
-    try:
-        run = wandb.init(
-            project="coderl",
-            job_type="eval",
-            name=f"eval-{cfg.model.split('/')[-1]}" + ("-adapter" if cfg.adapter else ""),
-            config={
-                "model": cfg.model,
-                "adapter": cfg.adapter,
-                "config": asdict(cfg) | {"out": str(cfg.out), "data_dir": str(cfg.data_dir)},
-                "sandbox": summaries[0]["sandbox"],
-                "env": summaries[0]["env"],
-            },
-        )
-        flat: dict[str, Any] = {}
-        for s in summaries:
-            b = s["benchmark"]
-            flat.update({f"{b}/{k}": v for k, v in s["metrics"].items() if v is not None})
-            for pname, p in s["passes"].items():
-                d = p["diagnostics"]
-                for key in ("syntax_error_rate", "timeout_rate", "runtime_error_rate"):
-                    flat[f"{b}/{pname}/{key}"] = d[key]
-        run.log(flat)
-        run.summary.update(flat)
-        run.finish()
-    except Exception as exc:  # noqa: BLE001 - logging must never fail an eval
-        log.warning("wandb_failed", error=repr(exc))
-
-
 def run_eval(gen: Generator, cfg: EvalConfig, executor: Executor | None = None) -> list[dict]:
     """Evaluate ``gen`` on every benchmark in ``cfg``; returns the summaries."""
     own = executor is None
     ex = executor or get_executor(profile="eval")
     info = sandbox_info(ex)
     log.info("eval_sandbox", **info)
-    if info["isolation"] in ("none", "unknown"):
-        log.warning("eval_sandbox_weak_isolation", isolation=info["isolation"])
+    if info["isolation"] not in ("bwrap", "docker"):
+        exposed = [k for k in SECRET_ENV if os.environ.get(k)]
+        log.warning(
+            "eval_sandbox_weak_isolation",
+            isolation=info["isolation"],
+            secrets_in_env=exposed,
+            hint="generated code can read this process' environment via /proc and may reach "
+            "the network; keep secrets out of the eval process (log to W&B afterwards with "
+            "`python -m coderl.eval.report RESULTS --wandb`)"
+            if exposed
+            else None,
+        )
     try:
         summaries = [evaluate(gen, ex, cfg, b) for b in cfg.benchmarks]
     finally:
         if own:
             ex.close()
-    _wandb_log(cfg, summaries)
+    from coderl.eval.report import log_to_wandb
+
+    log_to_wandb(summaries)
     return summaries
 
 
