@@ -9,7 +9,7 @@ def test_builtin_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CODERL_SANDBOX_CONFIG", raising=False)
     assert load_limits("train") == SandboxLimits()
     ev = load_limits("eval")
-    assert (ev.cpu_seconds, ev.wall_seconds, ev.per_test_seconds) == (6, 12.0, 4.0)
+    assert (ev.cpu_seconds, ev.wall_seconds, ev.per_test_seconds) == (6, 12.0, 6.0)
     assert ev.memory_mb == SandboxLimits().memory_mb
     with pytest.raises(ValueError):
         load_limits("nope")

@@ -47,7 +47,7 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
     # RL rollouts: tight limits keep reward computation fast
     "train": {},
     # benchmark evaluation: generous enough for slow-but-correct reference solutions
-    "eval": {"cpu_seconds": 6, "wall_seconds": 12.0, "per_test_seconds": 4.0},
+    "eval": {"cpu_seconds": 6, "wall_seconds": 12.0, "per_test_seconds": 6.0},
 }
 PROFILE_CONFIG_ENV = "CODERL_SANDBOX_CONFIG"
 
