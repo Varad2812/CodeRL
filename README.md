@@ -4,7 +4,7 @@
 (Qwen2.5-Coder 0.5B/1.5B) is trained with GRPO (TRL + PEFT LoRA) on pass/fail signals from
 running its own generated code in a secure sandbox against unit tests.
 
-> 🚧 **Phase 1b — secure sandbox executor** (Phase 1a data pipeline done)
+> 🚧 **Phase 2a — pass@k evaluation of the base models** (Phase 1a data pipeline and 1b secure sandbox done)
 
 [![CI](https://github.com/Varad2812/CodeRL/actions/workflows/ci.yml/badge.svg)](https://github.com/Varad2812/CodeRL/actions/workflows/ci.yml)
 
@@ -42,7 +42,33 @@ flowchart LR
 | Rejection-SFT    | TBD              | TBD               | TBD              | TBD               |
 | GRPO             | TBD              | TBD               | TBD              | TBD               |
 
-No numbers yet — to be filled in after training and evaluation.
+No numbers yet. The base-model rows come from the Kaggle run
+([`docs/KAGGLE.md`](docs/KAGGLE.md)); `python -m coderl.eval.report results/` generates the table.
+
+## Evaluation
+
+| | |
+|---|---|
+| Benchmarks | HumanEval (164 problems), MBPP-test (500). Never trained on; see the contamination policy below. |
+| Prompt | Chat template of the instruct model. Fixed system prompt asking for one ```` ```python ```` block. HumanEval: signature + docstring. MBPP: description + the first test assert. |
+| Greedy | T = 0, n = 1 → **pass@1 (greedy)** |
+| Sampled | T = 0.8, top_p = 0.95, **n = 20** per problem → **pass@1** and **pass@10** with the unbiased estimator of [Chen et al. 2021](https://arxiv.org/abs/2107.03374): `1 − C(n−c, k) / C(n, k)`, averaged over problems |
+| Decoding | max 512 new tokens, no repetition penalty or top-k, fixed seeds (per-problem seed = seed + index) |
+| Extraction | first ```` ```python ```` block (fallback: any fence, then raw text); main guards, asserts and example calls removed. For HumanEval, a body-only answer gets its signature back, and the prompt's imports/helpers are prepended (the official protocol runs prompt + completion). Every completion records its `extraction_status`. |
+| Execution | sandbox, `eval` limit profile (6 s CPU, 12 s wall, 6 s per test, 256 MB). Correct = every test passes **and** no integrity flags (e.g. `custom_eq`). |
+| Outputs | `results/<run>/<benchmark>/summary.json` (committed): metrics, error/timeout/extraction breakdowns, sandbox isolation level, git commit, package versions. `samples.jsonl.gz` holds every completion (not committed). |
+
+```bash
+make install-hf && make smoke-eval   # Mac: HF on MPS, 5 problems/benchmark, n=2, Docker sandbox
+python -m coderl.eval.run_benchmarks --model Qwen/Qwen2.5-Coder-0.5B-Instruct --backend vllm \
+    --benchmarks humaneval,mbpp_test --out results/base/qwen0.5b --dtype float16   # Linux GPU
+python -m coderl.eval.report results/   # markdown table of every summary.json
+```
+
+The sandbox has two named limit profiles. `train` (2 s CPU / 4 s wall) is used for RL rewards and
+`eval` for benchmarks. They can be overridden via YAML (`CODERL_SANDBOX_CONFIG`,
+`profiles.<name>.<field>`) or env (`CODERL_SANDBOX_EVAL_CPU_SECONDS=8`). All 1,119 canonical
+solutions pass under `eval`.
 
 ## Sandbox
 
@@ -76,7 +102,7 @@ memory bombs, infinite loops, `sys.exit`/`os._exit`, fake stdout JSON, forged re
 redefined `AssertionError`/builtins/`math.isclose`, `atexit`, reading tests via `gc`, frames,
 signal handlers and file descriptors) and runs the OS-level attacks a second time with the
 in-process hardening disabled. All 1,119 canonical solutions run through both backends in CI
-(99.9% pass; the one failure is a reference solution slower than the 2s CPU limit).
+(100% under the `eval` limit profile; one reference solution needs ~2 s CPU and exceeds the `train` profile).
 
 **Throughput** — all 500 MBPP-test canonical solutions (1,516 test cases), `make bench-sandbox`.
 Measured on an **Apple M2 MacBook (8 cores) via Docker Desktop** (Linux VM, 8 vCPUs), so the
@@ -103,7 +129,7 @@ Raw results: [`results/sandbox_bench.json`](results/sandbox_bench.json).
 ## Quickstart
 
 ```bash
-uv venv --python 3.11
+uv venv --python 3.11   # 3.10-3.13 supported
 make install      # core + dev deps
 make all          # lint + typecheck + tests
 make data         # downloads MBPP/HumanEval, writes data/processed/*
@@ -115,7 +141,7 @@ make bench-sandbox   # throughput of each available backend -> results/sandbox_b
 On Linux, install `bubblewrap` (`apt install bubblewrap`) for full subprocess-backend isolation;
 `uv run python -m coderl.sandbox info` shows what is available.
 
-Optional extras: `uv sync --extra train`, `--extra gen` (Linux/CUDA only), `--extra app`.
+Optional extras: `--extra hf` (torch + transformers; Mac/CPU/CUDA), `--extra gen` (vLLM 0.18.1, Linux/CUDA only), `--extra train`, `--extra app`.
 
 ## Repo structure
 
@@ -125,10 +151,12 @@ coderl/
   sandbox/    harness, runner, subprocess + docker backends, worker pool, metrics
   rewards/    (Phase 2) test-based rewards
   train/      (Phase 3) GRPO + LoRA
-  eval/       (Phase 4) pass@k evaluation
+  eval/       prompts, code extraction, pass@k, benchmark runner, report
+  gen/        generation backends: vLLM, Hugging Face, mock
   app/        (Phase 5) FastAPI backend
   utils/      structured logging, settings
 docker/       sandbox image (sandbox.Dockerfile)
+notebooks/    Kaggle notebook (base-model eval); docs/KAGGLE.md
 scripts/      benchmarks
 tests/        offline unit tests (no network); tests/sandbox = security suite
 ```
